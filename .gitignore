@@ -1,0 +1,25 @@
+.env
+.venv/
+node_modules/
+bruno/
+AGENTS.md
+sujet.md
+
+# Next.js
+.next/
+out/
+
+# Node
+node_modules/
+
+# Build outputs & source maps
+*.map
+
+welovedevs_api.txt
+*.json
+
+*.gguf
+
+__pycache__/
+
+jobAggregator-project.md

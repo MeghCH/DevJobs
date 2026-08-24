@@ -1,0 +1,154 @@
+services:
+  db:
+    image: mysql:8.0
+    container_name: jobaggregator-db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: jobaggregator
+      MYSQL_USER: appuser
+      MYSQL_PASSWORD: apppassword
+    ports:
+      - "3306:3306"
+    volumes:
+      - db_data:/var/lib/mysql
+      - ./Backend/config/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "mysqladmin",
+          "ping",
+          "-h",
+          "localhost",
+          "-uappuser",
+          "-papppassword",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - backend_network
+
+  backend:
+    build: ./Backend
+    container_name: jobaggregator-backend
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    environment:
+      DB_HOST: db
+      DB_USER: appuser
+      DB_PASSWORD: apppassword
+      DB_NAME: jobaggregator
+      DB_PORT: 3306
+    ports:
+      - "3000:3000"
+    volumes:
+      - uploads_data:/app/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - backend_network
+
+  frontend:
+    build:
+      context: ./Front
+      args:
+        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
+    ports:
+      - "3001:3000"
+    env_file:
+      - ./.env
+    environment:
+      - NODE_ENV=development
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
+    networks:
+      - backend_network
+  ai-service:
+    build: ./AI-service
+    container_name: jobaggregator-ai
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    networks:
+      - backend_network
+  tests:
+    image: curlimages/curl:latest
+    container_name: jobaggregator-tests
+    depends_on:
+      backend:
+        condition: service_started
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        echo "Waiting for backend to be ready..."
+        sleep 5
+
+        echo ""
+        echo "--- 1. Health Check ---"
+        curl -s http://backend:3000/api/health | head -c 200 || echo "Health check failed"
+        echo ""
+
+        echo "--- 2. Register User ---"
+        curl -s -X POST http://backend:3000/api/auth/register \
+          -H "Content-Type: application/json" \
+          -d '{"name":"Doe","firstname":"John","email":"john@example.com","password":"mypassword123","role":"user"}'
+        echo ""
+
+        echo ""
+        echo "--- 3. Register Recruiter ---"
+        curl -s -X POST http://backend:3000/api/auth/register \
+          -H "Content-Type: application/json" \
+          -d '{"name":"Smith","firstname":"Jane","email":"jane@example.com","password":"mypassword123","role":"recruiter","company":"Acme Corp","siret":"12345678900012"}'
+        echo ""
+
+        echo ""
+        echo "--- 4. Login User ---"
+        TOKEN_RESPONSE=$$(curl -s -X POST http://backend:3000/api/auth/login \
+          -H "Content-Type: application/json" \
+          -d '{"email":"john@example.com","password":"mypassword123"}')
+        echo "$$TOKEN_RESPONSE"
+        TOKEN=$$(echo "$$TOKEN_RESPONSE" | grep -o '"token":"[^"]*"' | sed 's/"token":"//;s/"$$//')
+        echo ""
+
+        echo "--- 5. Get Me (Protected) ---"
+        curl -s -X GET http://backend:3000/api/auth/me \
+          -H "Authorization: Bearer $$TOKEN"
+        echo ""
+
+        echo ""
+        echo "--- 6. Duplicate Register (should fail 409) ---"
+        curl -s -X POST http://backend:3000/api/auth/register \
+          -H "Content-Type: application/json" \
+          -d '{"name":"Doe","firstname":"John","email":"john@example.com","password":"mypassword123","role":"user"}'
+        echo ""
+
+        echo ""
+        echo "--- 7. Invalid Role (should fail 400) ---"
+        curl -s -X POST http://backend:3000/api/auth/register \
+          -H "Content-Type: application/json" \
+          -d '{"name":"Doe","firstname":"John","email":"invalid@example.com","password":"mypassword123","role":"admin"}'
+        echo ""
+
+        echo ""
+        echo "--- 8. Invalid Login (should fail 401) ---"
+        curl -s -X POST http://backend:3000/api/auth/login \
+          -H "Content-Type: application/json" \
+          -d '{"email":"john@example.com","password":"wrongpassword"}'
+        echo ""
+
+        echo ""
+        echo "--- All tests completed ---"
+    networks:
+      - backend_network
+
+volumes:
+  db_data:
+  uploads_data:
+
+networks:
+  backend_network:
+    driver: bridge
